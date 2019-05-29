@@ -1,0 +1,109 @@
+https://ip:8006
+
+pvecm create cluster #on s2 node
+pvecm add s2  #on s1 s3 node
+pvecm status
+pvecm node
+
+vi /etc/apt/sources.list.d/pve-enterprise.list
+#deb http://enterprise.proxmox.com/debian/pve stretch pve-enterprise
+deb http://download.proxmox.com/debian/pve stretch pve-no-subsription
+apt update
+
+/var/cache/apt/archives
+
+dpkg -i *.deb
+
+pveceph install #on all nodes /var/cache/apt/archives
+
+apt-get install ceph-mds
+
+pveceph init --network 192.168.100.0/24
+
+vi /etc/ceph/ceph.conf
+mon clock drift allowed = 2
+mon clock drift warn backoff = 30
+
+
+pveceph createmon #on all nodes
+
+ceph-disk zap /dev/sdb  #on all nodes
+pveceph createosd /dev/sdb  #on all nodes
+for i in {a..c};do pveceph createosd /dev/sd$i;done
+
+Total PGs = ((Total_number_of_OSD * 100) / max_replication_count) / pool_count
+
+cd /var/lib/vz/template/
+
+cache iso qemu
+
+cd iso
+
+wget http://172.16.9.212/c672.iso
+
+ceph osd out 1
+systemctl stop ceph-osd@1  
+ceph osd crush remove osd.1
+ceph auth del osd.1
+ceph osd rm osd.1
+umount /dev/vdc1
+
+ceph osd crush rm s3
+
+#Create RBD pools
+
+ceph osd pool create cephfs 64 64
+ceph osd pool create cephfs_metadata 64 64
+ceph osd pool application enable cephfs_metadata cephfs
+ceph osd pool application enable cephfs cephfs
+
+#Create an FS instance
+
+ceph fs new cephfs cephfs_metadata cephfs
+
+#Configure the MDS in /etc/ceph/ceph.conf
+
+[mds.p1]
+    host = p1
+    keyring = /var/lib/ceph/mds/ceph-$id/keyring
+[mds.p2]
+    host = p2
+    keyring = /var/lib/ceph/mds/ceph-$id/keyring
+[mds.p3]
+    host = p3
+    keyring = /var/lib/ceph/mds/ceph-$id/keyring
+
+#Set up the actual MDS on the host(s),On each MDS host, run:
+
+mkdir -p /var/lib/ceph/mds/ceph-$HOSTNAME
+ceph-authtool --create-keyring /var/lib/ceph/mds/ceph-$HOSTNAME/keyring --gen-key -n mds.$HOSTNAME
+ceph auth add mds.$HOSTNAME osd "allow rwx" mds "allow" mon "allow profile mds" -i /var/lib/ceph/mds/ceph-$HOSTNAME/keyring
+cp /var/lib/ceph/mds/ceph-$HOSTNAME/keyring /etc/pve/priv/ceph.mds.$HOSTNAME.keyring
+chown -R ceph. /var/lib/ceph/mds/ceph-$HOSTNAME
+systemctl enable ceph-mds@$HOSTNAME
+systemctl start ceph-mds@$HOSTNAME
+
+deb http://download.proxmox.com/debian/ceph-luminous stretch main > /etc/apt/sources.list.d/ceph.list
+
+#install ceph-fuse on cephfs client,Copy /etc/ceph/ceph.client.admin.keyring and /etc/ceph/ceph.conf
+from the host to the client.
+
+yum -y install ceph-fuse
+
+ceph-authtool -p /etc/ceph/ceph.client.admin.keyring > admin.key
+
+mount -t ceph p3:6789:/ /mnt -o name=admin,secretfile=admin.key
+
+echo "p3:6789:/ /mnt ceph name=admin,secretfile=/root/admin.key,noatime,_netdev 0 2" >> /etc/fstab
+
+df -hT
+
+#delete ceph fs
+
+systemctl stop ceph-mds@ceph3 #on all nodes
+
+ceph fs rm cephfs --yes-i-really-mean-it
+
+ceph osd pool delete cephfs_metadata cephfs_metadata --yes-i-really-really-mean-it
+
+ceph osd pool delete cephfs_data cephfs_data --yes-i-really-really-mean-it
